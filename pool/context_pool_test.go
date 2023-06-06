@@ -2,15 +2,15 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/sourcegraph/sourcegraph/lib/errors"
 )
 
 func ExampleContextPool_WithCancelOnError() {
@@ -113,6 +113,20 @@ func TestContextPool(t *testing.T) {
 			})
 			require.ErrorIs(t, p.Wait(), context.DeadlineExceeded)
 		})
+
+		t.Run("return before timed out", func(t *testing.T) {
+			t.Parallel()
+			p := New().WithContext(context.Background())
+			p.Go(func(ctx context.Context) error {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(1 * time.Millisecond):
+					return nil
+				}
+			})
+			require.NoError(t, p.Wait())
+		})
 	})
 
 	t.Run("WithCancelOnError", func(t *testing.T) {
@@ -173,9 +187,9 @@ func TestContextPool(t *testing.T) {
 		require.NotErrorIs(t, err, err2)
 	})
 
-	t.Run("WithFirstError and WithCancelOnError", func(t *testing.T) {
+	t.Run("WithFailFast", func(t *testing.T) {
 		t.Parallel()
-		p := New().WithContext(bgctx).WithFirstError().WithCancelOnError()
+		p := New().WithContext(bgctx).WithFailFast()
 		p.Go(func(ctx context.Context) error {
 			return err1
 		})
@@ -186,6 +200,27 @@ func TestContextPool(t *testing.T) {
 		err := p.Wait()
 		require.ErrorIs(t, err, err1)
 		require.NotErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("WithCancelOnError and panic", func(t *testing.T) {
+		t.Parallel()
+		p := New().WithContext(bgctx).WithCancelOnError()
+		var cancelledTasks atomic.Int64
+		p.Go(func(ctx context.Context) error {
+			<-ctx.Done()
+			cancelledTasks.Add(1)
+			return ctx.Err()
+		})
+		p.Go(func(ctx context.Context) error {
+			<-ctx.Done()
+			cancelledTasks.Add(1)
+			return ctx.Err()
+		})
+		p.Go(func(ctx context.Context) error {
+			panic("abort!")
+		})
+		assert.Panics(t, func() { _ = p.Wait() })
+		assert.EqualValues(t, 2, cancelledTasks.Load())
 	})
 
 	t.Run("limit", func(t *testing.T) {
@@ -202,7 +237,7 @@ func TestContextPool(t *testing.T) {
 					p.Go(func(context.Context) error {
 						cur := currentConcurrent.Add(1)
 						if cur > int64(maxConcurrent) {
-							return errors.Newf("expected no more than %d concurrent goroutine", maxConcurrent)
+							return fmt.Errorf("expected no more than %d concurrent goroutine", maxConcurrent)
 						}
 						time.Sleep(time.Millisecond)
 						currentConcurrent.Add(-1)

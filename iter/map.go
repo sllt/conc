@@ -3,7 +3,7 @@ package iter
 import (
 	"sync"
 
-	"github.com/sourcegraph/sourcegraph/lib/errors"
+	"github.com/sourcegraph/conc/internal/multierror"
 )
 
 // Mapper is an Iterator with a result type R. It can be used to configure
@@ -56,8 +56,7 @@ func (m Mapper[T, R]) MapErr(input []T, f func(*T) (R, error)) ([]R, error) {
 		res[i], err = f(t)
 		if err != nil {
 			errMux.Lock()
-			// TODO: use stdlib errors once multierrors land in go 1.20
-			errs = errors.Append(errs, err)
+			errs = multierror.Join(errs, err)
 			errMux.Unlock()
 		}
 	})

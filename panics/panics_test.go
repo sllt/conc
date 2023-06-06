@@ -143,7 +143,7 @@ func TestCatcher(t *testing.T) {
 	})
 }
 
-func TestRecoveredPanicAsError(t *testing.T) {
+func TestRecoveredAsError(t *testing.T) {
 	t.Parallel()
 	t.Run("as error is nil", func(t *testing.T) {
 		t.Parallel()
@@ -156,7 +156,7 @@ func TestRecoveredPanicAsError(t *testing.T) {
 		assert.Nil(t, err)
 	})
 
-	t.Run("as error is not nil nil", func(t *testing.T) {
+	t.Run("as error is not nil", func(t *testing.T) {
 		t.Parallel()
 		fn := func() error {
 			var c Catcher

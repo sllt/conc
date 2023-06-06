@@ -23,6 +23,18 @@ type ContextPool struct {
 // are busy, a call to Go() will block until the task can be started.
 func (p *ContextPool) Go(f func(ctx context.Context) error) {
 	p.errorPool.Go(func() error {
+		if p.cancelOnError {
+			// If we are cancelling on error, then we also want to cancel if a
+			// panic is raised. To do this, we need to recover, cancel, and then
+			// re-throw the caught panic.
+			defer func() {
+				if r := recover(); r != nil {
+					p.cancel()
+					panic(r)
+				}
+			}()
+		}
+
 		err := f(p.ctx)
 		if err != nil && p.cancelOnError {
 			// Leaky abstraction warning: We add the error directly because
@@ -40,6 +52,8 @@ func (p *ContextPool) Go(f func(ctx context.Context) error) {
 // Wait cleans up all spawned goroutines, propagates any panics, and
 // returns an error if any of the tasks errored.
 func (p *ContextPool) Wait() error {
+	// Make sure we call cancel after pool is done to avoid memory leakage.
+	defer p.cancel()
 	return p.errorPool.Wait()
 }
 
@@ -54,7 +68,7 @@ func (p *ContextPool) WithFirstError() *ContextPool {
 }
 
 // WithCancelOnError configures the pool to cancel its context as soon as
-// any task returns an error. By default, the pool's context is not
+// any task returns an error or panics. By default, the pool's context is not
 // canceled until the parent context is canceled.
 //
 // In this case, all errors returned from the pool after the first will
@@ -64,6 +78,16 @@ func (p *ContextPool) WithFirstError() *ContextPool {
 func (p *ContextPool) WithCancelOnError() *ContextPool {
 	p.panicIfInitialized()
 	p.cancelOnError = true
+	return p
+}
+
+// WithFailFast is an alias for the combination of WithFirstError and
+// WithCancelOnError. By default, the errors from all tasks are returned and
+// the pool's context is not canceled until the parent context is canceled.
+func (p *ContextPool) WithFailFast() *ContextPool {
+	p.panicIfInitialized()
+	p.WithFirstError()
+	p.WithCancelOnError()
 	return p
 }
 

@@ -2,15 +2,16 @@ package pool
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/sourcegraph/sourcegraph/lib/errors"
 )
 
 func TestResultContextPool(t *testing.T) {
@@ -100,6 +101,45 @@ func TestResultContextPool(t *testing.T) {
 		require.ErrorIs(t, err, err1)
 	})
 
+	t.Run("WithFailFast", func(t *testing.T) {
+		t.Parallel()
+		p := NewWithResults[int]().WithContext(context.Background()).WithFailFast()
+		p.Go(func(ctx context.Context) (int, error) {
+			return 0, err1
+		})
+		p.Go(func(ctx context.Context) (int, error) {
+			<-ctx.Done()
+			return 1, ctx.Err()
+		})
+		results, err := p.Wait()
+		require.ErrorIs(t, err, err1)
+		require.NotErrorIs(t, err, context.Canceled)
+		require.Empty(t, results)
+	})
+
+	t.Run("WithCancelOnError and panic", func(t *testing.T) {
+		t.Parallel()
+		p := NewWithResults[int]().
+			WithContext(context.Background()).
+			WithCancelOnError()
+		var cancelledTasks atomic.Int64
+		p.Go(func(ctx context.Context) (int, error) {
+			<-ctx.Done()
+			cancelledTasks.Add(1)
+			return 0, ctx.Err()
+		})
+		p.Go(func(ctx context.Context) (int, error) {
+			<-ctx.Done()
+			cancelledTasks.Add(1)
+			return 0, ctx.Err()
+		})
+		p.Go(func(ctx context.Context) (int, error) {
+			panic("abort!")
+		})
+		assert.Panics(t, func() { _, _ = p.Wait() })
+		assert.EqualValues(t, 2, cancelledTasks.Load())
+	})
+
 	t.Run("no WithCancelOnError", func(t *testing.T) {
 		t.Parallel()
 		g := NewWithResults[int]().WithContext(context.Background())
@@ -173,7 +213,7 @@ func TestResultContextPool(t *testing.T) {
 					g.Go(func(context.Context) (int, error) {
 						cur := currentConcurrent.Add(1)
 						if cur > int64(maxConcurrency) {
-							return 0, errors.Newf("expected no more than %d concurrent goroutines", maxConcurrency)
+							return 0, fmt.Errorf("expected no more than %d concurrent goroutines", maxConcurrency)
 						}
 						time.Sleep(time.Millisecond)
 						currentConcurrent.Add(-1)
